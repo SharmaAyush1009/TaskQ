@@ -20,11 +20,12 @@ async function reapZombieTasks() {
        RETURNING id, type, updated_at`
     );
 
-    // Also check for PENDING tasks not in queue
+    // Also check for PENDING tasks not in queue // Only re-queue if retry_at is past or NULL
     const pendingResult = await pool.query(
       `SELECT id, type FROM tasks 
        WHERE status = 'PENDING' 
        AND updated_at < NOW() - INTERVAL '1 minute'
+       AND (retry_at is NULL OR retry_at <= NOW())  
        ORDER BY created_at ASC`
     );
 

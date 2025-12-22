@@ -191,6 +191,16 @@ async function processTask(taskId) {
 
   const task = checkResult.rows[0];
 
+  // ✅ ADD THIS: Check retry_at
+  if (task.retry_at && new Date(task.retry_at) > new Date()) {
+    const waitSeconds = Math.ceil((new Date(task.retry_at) - new Date()) / 1000);
+    console.log(`Task ${taskId} not ready yet (retry in ${waitSeconds}s), re-queueing`);
+    
+    // Put back in queue
+    await commandClient.lPush('task_queue', taskId.toString());
+    return;
+  }
+  
   // IDEMPOTENCY CHECK 1: Already completed?
   if (task.status === 'SUCCESS') {
     console.log(`Task ${taskId} already completed, skipping\n`);
