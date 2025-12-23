@@ -2,6 +2,18 @@ require("dotenv").config();
 const { commandClient, blockingClient} = require("../queue/redis");
 const pool = require("../db/db");
 
+
+function isNonRetryableError(err) {
+  const msg = err.message || "";
+
+  return (
+    msg.includes("recipient") ||
+    msg.includes("null value") ||
+    msg.includes("violates not-null constraint") ||
+    msg.includes("Unknown task type")
+  );
+}
+
 // IDEMPOTENT TASK HANDLERS
 
 const taskHandlers = {
@@ -270,6 +282,21 @@ async function processTask(taskId) {
     const duration = Date.now() - startTime;
     const newAttempts = claimedTask.attempts + 1;
 
+    if (isNonRetryableError(err)) {
+      await pool.query(
+        `UPDATE tasks
+        SET status = 'DEAD',
+            attempts = $2,
+            last_error = $3,
+            updated_at = NOW()
+        WHERE id = $1`,
+        [claimedTask.id, newAttempts, err.message]
+      );
+
+      console.error(`💀 [Task ${claimedTask.id}] Non-retryable error`);
+      console.error(`   Error: ${err.message}\n`);
+      return;
+    }
     // Check if we should retry
     if (newAttempts < claimedTask.max_attempts) {
       // Exponential backoff: 2^attempts seconds

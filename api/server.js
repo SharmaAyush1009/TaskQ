@@ -16,7 +16,29 @@ app.post("/tasks", async (req, res) => {
       error: "type and payload are required" 
     });
   }
+  if (type === "send_email") {
+    if (!payload.to || typeof payload.to !== "string") {
+      return res.status(400).json({
+        error: "payload.to (recipient email) is required for send_email tasks"
+      });
+    }
+  }
 
+  if (type === "process_payment") {
+    if (typeof payload.amount !== "number") {
+      return res.status(400).json({
+        error: "payload.amount is required for process_payment tasks"
+      });
+    }
+  }
+
+  if (type === "resize_image") {
+    if (!payload.url || !Array.isArray(payload.sizes)) {
+      return res.status(400).json({
+        error: "payload.url and payload.sizes[] are required for resize_image"
+      });
+    }
+  }
   if (!idempotency_key) {
     return res.status(400).json({ 
       error: "idempotency_key is required for duplicate prevention" 
@@ -149,7 +171,9 @@ app.get("/tasks", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy' });
+});
 // Start server
 
 const PORT = process.env.PORT || 3000;
