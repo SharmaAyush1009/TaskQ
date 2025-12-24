@@ -133,10 +133,7 @@ app.get("/stats", async (req, res) => {
   }
 });
 
-// ============================================
-// LIST TASKS
-// ============================================
-
+//list tasks
 app.get("/tasks", async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;

@@ -20,7 +20,7 @@ async function reapZombieTasks() {
        RETURNING id, type, updated_at`
     );
 
-    // Also check for PENDING tasks not in queue // Only re-queue if retry_at is past or NULL
+    // Also check for PENDING tasks not in queue, only re-queue if retry_at is past or NULL
     const pendingResult = await pool.query(
       `SELECT id, type FROM tasks 
        WHERE status = 'PENDING' 
@@ -65,17 +65,15 @@ async function reapZombieTasks() {
 }
 
 async function startReaper() {
-  console.log("════════════════════════════════════════");
   console.log("Zombie Task Reaper Started");
   console.log(`Check interval: Every ${CHECK_INTERVAL_MINUTES} minutes`);
   console.log(`Zombie threshold: ${ZOMBIE_THRESHOLD_MINUTES} minutes`);
   console.log(`Started at: ${new Date().toLocaleString()}`);
-  console.log("════════════════════════════════════════");
 
   // Run immediately on start
   await reapZombieTasks();
 
-  // Then run periodically
+  // run periodically
   setInterval(reapZombieTasks, CHECK_INTERVAL_MINUTES * 60 * 1000);
 }
 

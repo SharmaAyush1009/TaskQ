@@ -56,7 +56,7 @@ const taskHandlers = {
     return { status: 'sent', to: payload.to };
   },
 
-  // PAYMENT HANDLER (with idempotency)
+  // PAYMENT HANDLER ( idempotency)
   
   process_payment: async (payload, taskId) => {
     // Check if already processed
@@ -190,7 +190,7 @@ const taskHandlers = {
 // WORKER LOGIC (IDEMPOTENT)
 
 async function processTask(taskId) {
-  // STEP 1: Fetch current task state
+  // 1: Fetch current task state
   const checkResult = await pool.query(
     'SELECT * FROM tasks WHERE id = $1',
     [taskId]
@@ -203,7 +203,7 @@ async function processTask(taskId) {
 
   const task = checkResult.rows[0];
 
-  // ✅ ADD THIS: Check retry_at
+  // Check retry_at
   if (task.retry_at && new Date(task.retry_at) > new Date()) {
     const waitSeconds = Math.ceil((new Date(task.retry_at) - new Date()) / 1000);
     console.log(`Task ${taskId} not ready yet (retry in ${waitSeconds}s), re-queueing`);
@@ -213,13 +213,13 @@ async function processTask(taskId) {
     return;
   }
   
-  // IDEMPOTENCY CHECK 1: Already completed?
+  // idem. check 1: Already completed?
   if (task.status === 'SUCCESS') {
     console.log(`Task ${taskId} already completed, skipping\n`);
     return;
   }
 
-  // IDEMPOTENCY CHECK 2: Currently being processed by another worker?
+  // idem check 2: Currently being processed by another worker?
   if (task.status === 'IN_PROGRESS') {
     const ageMinutes = (Date.now() - new Date(task.updated_at)) / 1000 / 60;
     if (ageMinutes < 10) {
@@ -229,7 +229,7 @@ async function processTask(taskId) {
     // If older than 10 minutes, it's probably a zombie - continue to claim
   }
 
-  // STEP 2: Try to atomically claim the task
+  // 2: Try to atomically claim the task
   const claimResult = await pool.query(
     `UPDATE tasks
      SET status = 'IN_PROGRESS', updated_at = NOW()
@@ -251,7 +251,7 @@ async function processTask(taskId) {
   console.log(`Attempt: ${claimedTask.attempts + 1}/${claimedTask.max_attempts}`);
 
   try {
-    // STEP 3: Find and execute the handler
+    // 3: Find and execute the handler
     const handler = taskHandlers[claimedTask.type];
     
     if (!handler) {
@@ -266,7 +266,7 @@ async function processTask(taskId) {
     
     const duration = Date.now() - startTime;
 
-    // STEP 4: Mark as successful
+    // 4: Mark as successful
     await pool.query(
       `UPDATE tasks
        SET status = 'SUCCESS', 
@@ -293,8 +293,8 @@ async function processTask(taskId) {
         [claimedTask.id, newAttempts, err.message]
       );
 
-      console.error(`💀 [Task ${claimedTask.id}] Non-retryable error`);
-      console.error(`   Error: ${err.message}\n`);
+      console.error(`[Task ${claimedTask.id}] Non-retryable error`);
+      console.error(`Error: ${err.message}\n`);
       return;
     }
     // Check if we should retry
@@ -315,24 +315,17 @@ async function processTask(taskId) {
         [claimedTask.id, newAttempts, err.message, retryAt]
       );
 
-      console.log(`🔄 [Task ${claimedTask.id}] Will retry in ${backoffSeconds}s`);
-      console.log(`   Attempt ${newAttempts}/${claimedTask.max_attempts}`);
-      console.log(`   Error: ${err.message}\n`);
+      console.log(`[Task ${claimedTask.id}] Will retry in ${backoffSeconds}s`);
+      console.log(`Attempt ${newAttempts}/${claimedTask.max_attempts}`);
+      console.log(`Error: ${err.message}\n`);
 
-      // // Re-queue after delay
-      // setTimeout(async () => {
-      //   await redis.lPush('task_queue', claimedTask.id.toString());
-      //   console.log(`📨 [Task ${claimedTask.id}] Re-queued for retry\n`);
-      // }, backoffSeconds * 1000);
-      // ⚠️ IMPORTANT: Don't use await inside setTimeout!
-      // Re-queue after delay (non-blocking)
       setTimeout(() => {
         commandClient.lPush('task_queue', claimedTask.id.toString())
           .then(() => {
-            console.log(`📨 [Task ${claimedTask.id}] Re-queued for retry\n`);
+            console.log(`[Task ${claimedTask.id}] Re-queued for retry\n`);
           })
           .catch((redisErr) => {
-            console.error(`❌ Failed to re-queue task ${claimedTask.id}:`, redisErr.message);
+            console.error(`Failed to re-queue task ${claimedTask.id}:`, redisErr.message);
           });
       }, backoffSeconds * 1000);
 
@@ -348,21 +341,19 @@ async function processTask(taskId) {
         [claimedTask.id, newAttempts, err.message]
       );
 
-      console.error(`💀 [Task ${claimedTask.id}] Max retries exceeded`);
-      console.error(`   Final error: ${err.message}\n`);
+      console.error(`[Task ${claimedTask.id}] Max retries exceeded`);
+      console.error(`Final error: ${err.message}\n`);
     }
   }
 }
 
 async function startWorker() {
-  console.log("════════════════════════════════════════");
   console.log("Task Worker Started");
   console.log(`Supported task types:`);
   Object.keys(taskHandlers).forEach(type => {
     console.log(`   - ${type}`);
   });
   console.log(`Started at: ${new Date().toLocaleString()}`);
-  console.log("════════════════════════════════════════\n");
   console.log("Waiting for tasks...\n");
 
   while (true) {

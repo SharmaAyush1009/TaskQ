@@ -17,10 +17,10 @@ commandClient.on("error", (err) => console.error("Redis Command Client Error:", 
 // Connect both clients
 (async () => {
   await blockingClient.connect();
-  console.log("✅ Redis blocking client connected");
+  console.log("Redis blocking client connected");
   
   await commandClient.connect();
-  console.log("✅ Redis command client connected");
+  console.log("Redis command client connected");
 })();
 
 module.exports = {
