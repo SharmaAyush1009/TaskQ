@@ -7,7 +7,6 @@ const { commandClient } = require("../queue/redis");
 const app = express();
 app.use(express.json());
 
-// Add this object near the top of the file, before the route handlers:
 const taskValidators = {
   send_email: (payload) => {
     if (!payload.to || typeof payload.to !== 'string') 

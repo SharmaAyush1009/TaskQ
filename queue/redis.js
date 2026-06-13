@@ -6,7 +6,7 @@ const blockingClient = createClient({
   url: process.env.REDIS_URL,
 });
 
-// Connection for COMMAND operations (LPUSH, etc.)
+// Connection for COMMAND operations (LPUSH)
 const commandClient = createClient({
   url: process.env.REDIS_URL,
 });

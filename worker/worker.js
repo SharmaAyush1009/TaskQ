@@ -302,7 +302,7 @@ async function processTask(taskId) {
     // Check if we should retry
     if (newAttempts < claimedTask.max_attempts) {
       // Exponential backoff: 2^attempts seconds
-      // Attempt 1: 2s, Attempt 2: 4s, Attempt 3: 8s
+      // 2s,4s,8s
       const backoffSeconds = Math.pow(2, newAttempts);
       const retryAt = new Date(Date.now() + backoffSeconds * 1000);
 

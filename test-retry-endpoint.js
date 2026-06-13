@@ -3,7 +3,7 @@ const axios = require("axios");
 async function run() {
   const BASE = "http://localhost:3000";
 
-  // Create a test_failure task — it will go DEAD after max_attempts
+  // Create a test_failure task (it will go dead after max_attempts)
   const create = await axios.post(`${BASE}/tasks`, {
     type: "test_failure",
     payload: {},
