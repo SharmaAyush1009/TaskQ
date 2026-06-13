@@ -2,7 +2,7 @@ require("dotenv").config();
 const pool = require("../db/db");
 const { commandClient } = require("../queue/redis");
 
-const ZOMBIE_THRESHOLD_MINUTES = 1;
+const {ZOMBIE_THRESHOLD_MINUTES} = require('./config');
 const CHECK_INTERVAL_MINUTES = 5;
 
 async function reapZombieTasks() {
@@ -16,8 +16,9 @@ async function reapZombieTasks() {
            attempts = attempts + 1,
            updated_at = NOW()
        WHERE status = 'IN_PROGRESS'
-         AND updated_at < NOW() - INTERVAL '${ZOMBIE_THRESHOLD_MINUTES} minutes'
-       RETURNING id, type, updated_at`
+         AND updated_at < NOW() - ($1*INTERVAL '1 minute')
+       RETURNING id, type, updated_at`,
+       [ZOMBIE_THRESHOLD_MINUTES]
     );
 
     // Also check for PENDING tasks not in queue, only re-queue if retry_at is past or NULL
@@ -39,6 +40,8 @@ async function reapZombieTasks() {
         console.log(`   - Task ${task.id} (${task.type}) - stale for ${age} minutes`);
         
         await commandClient.lPush('task_queue', task.id.toString());
+        await commandClient.sAdd("task_queue_set", task.id.toString());
+
         console.log(` Re-queued`);
         totalRequeued++;
       }
@@ -46,11 +49,16 @@ async function reapZombieTasks() {
 
     if (pendingResult.rowCount > 0) {
       console.log(`Found ${pendingResult.rowCount} pending task(s) to re-queue:`);
-
       for (const task of pendingResult.rows) {
-        await commandClient.lPush('task_queue', task.id.toString());
-        console.log(`Re-queued task ${task.id} (${task.type})`);
-        totalRequeued++;
+        const alreadyQueued = await commandClient.sIsMember("task_queue_set", task.id.toString());
+        if (!alreadyQueued) {
+          await commandClient.lPush("task_queue", task.id.toString());
+          await commandClient.sAdd("task_queue_set", task.id.toString());
+          console.log(`Re-queued task ${task.id} (${task.type})`);
+          totalRequeued++;
+        } else {
+          console.log(`Task ${task.id} already in queue, skipping`);
+        }
       }
     }
 
@@ -65,6 +73,21 @@ async function reapZombieTasks() {
 }
 
 async function startReaper() {
+  try {
+    await pool.query("SELECT 1");
+    console.log("Postgres connection verified");
+  } catch (err) {
+    console.error("Cannot connect to Postgres:", err.message);
+    process.exit(1);
+  }
+  try {
+    await commandClient.ping();
+    console.log("Redis connection verified");
+  } catch (err) {
+    console.error("Cannot connect to Redis:", err.message);
+    process.exit(1);
+  }
+  
   console.log("Zombie Task Reaper Started");
   console.log(`Check interval: Every ${CHECK_INTERVAL_MINUTES} minutes`);
   console.log(`Zombie threshold: ${ZOMBIE_THRESHOLD_MINUTES} minutes`);

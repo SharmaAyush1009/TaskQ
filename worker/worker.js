@@ -2,16 +2,11 @@ require("dotenv").config();
 const { commandClient, blockingClient} = require("../queue/redis");
 const pool = require("../db/db");
 
-
-function isNonRetryableError(err) {
-  const msg = err.message || "";
-
-  return (
-    msg.includes("recipient") ||
-    msg.includes("null value") ||
-    msg.includes("violates not-null constraint") ||
-    msg.includes("Unknown task type")
-  );
+class NonRetryableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'NonRetryableError';
+  }
 }
 
 // IDEMPOTENT TASK HANDLERS
@@ -21,6 +16,9 @@ const taskHandlers = {
   // EMAIL HANDLER (with idempotency)
 
   send_email: async (payload, taskId) => {
+    if (!payload.to) {
+      throw new NonRetryableError('recipient email is missing');
+    }
     // Check if already sent
     const existing = await pool.query(
       'SELECT * FROM email_logs WHERE task_id = $1',
@@ -190,6 +188,7 @@ const taskHandlers = {
 // WORKER LOGIC (IDEMPOTENT)
 
 async function processTask(taskId) {
+  await commandClient.sRem("task_queue_set", taskId.toString());
   // 1: Fetch current task state
   const checkResult = await pool.query(
     'SELECT * FROM tasks WHERE id = $1',
@@ -210,6 +209,7 @@ async function processTask(taskId) {
     
     // Put back in queue
     await commandClient.lPush('task_queue', taskId.toString());
+    await commandClient.sAdd('task_queue_set', taskId.toString());
     return;
   }
   
@@ -222,7 +222,9 @@ async function processTask(taskId) {
   // idem check 2: Currently being processed by another worker?
   if (task.status === 'IN_PROGRESS') {
     const ageMinutes = (Date.now() - new Date(task.updated_at)) / 1000 / 60;
-    if (ageMinutes < 10) {
+    const {ZOMBIE_THRESHOLD_MINUTES} = require('./config');
+
+    if (ageMinutes < ZOMBIE_THRESHOLD_MINUTES) {
       console.log(`Task ${taskId} currently being processed by another worker, skipping\n`);
       return;
     }
@@ -282,7 +284,7 @@ async function processTask(taskId) {
     const duration = Date.now() - startTime;
     const newAttempts = claimedTask.attempts + 1;
 
-    if (isNonRetryableError(err)) {
+    if (err instanceof NonRetryableError || err.code === '23502' || err.code === '23505') {
       await pool.query(
         `UPDATE tasks
         SET status = 'DEAD',
@@ -319,16 +321,7 @@ async function processTask(taskId) {
       console.log(`Attempt ${newAttempts}/${claimedTask.max_attempts}`);
       console.log(`Error: ${err.message}\n`);
 
-      setTimeout(() => {
-        commandClient.lPush('task_queue', claimedTask.id.toString())
-          .then(() => {
-            console.log(`[Task ${claimedTask.id}] Re-queued for retry\n`);
-          })
-          .catch((redisErr) => {
-            console.error(`Failed to re-queue task ${claimedTask.id}:`, redisErr.message);
-          });
-      }, backoffSeconds * 1000);
-
+      console.log(`[Task ${claimedTask.id}] Retry scheduled via reaper at ${retryAt.toISOString()}`);
     } else {
       // Max retries exceeded - mark as DEAD
       await pool.query(
@@ -348,6 +341,21 @@ async function processTask(taskId) {
 }
 
 async function startWorker() {
+  try {
+    await pool.query("SELECT 1");
+    console.log("Postgres connection verified");
+  } catch (err) {
+    console.error("Cannot connect to Postgres:", err.message);
+    process.exit(1);
+  }
+  try {
+    await commandClient.ping();
+    console.log("Redis connection verified");
+  } catch (err) {
+    console.error("Cannot connect to Redis:", err.message);
+    process.exit(1);
+  }
+
   console.log("Task Worker Started");
   console.log(`Supported task types:`);
   Object.keys(taskHandlers).forEach(type => {
