@@ -2,3 +2,13 @@
 node_modules
 Notes.md 
 Overview.md 
+
+# Local interview preparation material
+/TaskQ-Interview-Guide.md
+
+# Local benchmark service state and generated scratch reports
+/data/benchmark-20261103/postgres/
+/data/benchmark-20261103/*.log
+/data/benchmark-20261103/*.pid
+/data/benchmark-20261103/original-*.js
+/data/benchmarks/

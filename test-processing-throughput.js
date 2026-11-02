@@ -1,37 +1,24 @@
-const pool = require("./db/db");
+require("dotenv").config();
+const fs = require("node:fs");
+const { Pool } = require("pg");
+const { observeProcessing } = require("./benchmarks/processing-metrics");
 
 async function run() {
-  const TARGET = 200; // adjust based on how many you just enqueued
-
-  console.log("Waiting for worker to process tasks...");
-  const start = Date.now();
-
-  while (true) {
-    const result = await pool.query(
-      `SELECT 
-        COUNT(*) FILTER (WHERE status = 'SUCCESS') as done,
-        COUNT(*) FILTER (WHERE status = 'PENDING' OR status = 'IN_PROGRESS') as remaining,
-        COUNT(*) FILTER (WHERE status = 'DEAD') as dead
-       FROM tasks
-       WHERE created_at > NOW() - INTERVAL '10 minutes'`
-    );
-
-    const { done, remaining, dead } = result.rows[0];
-    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-    process.stdout.write(`\r[${elapsed}s] Done: ${done} | Remaining: ${remaining} | Dead: ${dead}   `);
-
-    if (parseInt(remaining) === 0) {
-      const duration = (Date.now() - start) / 1000;
-      console.log(`\n\nAll tasks processed in ${duration.toFixed(2)}s`);
-      console.log(`Processing throughput: ${(parseInt(done) / duration).toFixed(0)} tasks/sec`);
-      console.log(`Dead tasks: ${dead}`);
-      break;
-    }
-
-    await new Promise(res => setTimeout(res, 500));
+  const source = process.argv[2];
+  if (!source) throw new Error("Usage: node test-processing-throughput.js <enqueue-report.json>");
+  const input = JSON.parse(fs.readFileSync(source, "utf8"));
+  const pool = new Pool({ host: process.env.DB_HOST, port: process.env.DB_PORT,
+    user: process.env.DB_USER, password: process.env.DB_PASSWORD, database: process.env.DB_NAME,
+    connectionTimeoutMillis: 5000, query_timeout: 5000 });
+  try {
+    const result = await observeProcessing(pool, input, {timeoutMs: process.env.PROCESSING_TIMEOUT_MS});
+    const destination = source.replace(/\.json$/i, "") + ".processing.json";
+    fs.writeFileSync(destination, `${JSON.stringify(result, null, 2)}\n`);
+    console.log(JSON.stringify(result, null, 2));
+    console.log(`Report: ${destination}`);
+    if (!result.valid) process.exitCode = 1;
+  } finally {
+    await pool.end();
   }
-
-  process.exit(0);
 }
-
-run();
+run().catch(error => { console.error(error.message); process.exitCode = 1; });

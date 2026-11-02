@@ -1,0 +1,9 @@
+Running 500 requests at concurrency 50...
+
+Completed: 500/500
+Duplicates (should be 0): 0
+Mean latency: 30.52ms
+p95: 112ms
+p99: 125ms
+Min: 15ms
+Max: 132ms

@@ -1,0 +1,7 @@
+{
+  "valid": false,
+  "measured": false,
+  "timestamp": "2026-11-02T19:59:38.256Z",
+  "error": "Error",
+  "code": "ECONNREFUSED"
+}

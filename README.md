@@ -154,16 +154,61 @@ These mechanisms support recovery and deduplication, but do not establish end-to
 
 ## Performance & Benchmarking Metrics
 
-The following figures are maintainer-reported measurements supplied for this project. Raw results, hardware specifications, and a saved run configuration are not checked into the repository; these numbers have not been independently reproduced here.
+The results below were measured locally on **2026-11-03 (Asia/Kolkata)**. Raw reports, task IDs, configuration, and environment details are saved in [data/benchmark-20261103](data/benchmark-20261103). They replace the unverified historical claims of ~2,000 enqueues/second, 20 ms mean, 53 ms p99, and exactly-once execution across 1,500+ tasks. Those earlier runs cannot be reconstructed from the repository.
 
-| Metric | Reported result | Scope |
+| Metric | Measured result | Scope and evidence |
 | --- | --- | --- |
-| Enqueue throughput | ~2,000 tasks/second | Task submission throughput; not completed handler executions per second. |
-| Average API latency | 20 ms | Task submission request latency; excludes background execution. |
-| p99 API latency | 53 ms | Task submission tail latency. |
-| Execution accuracy | Exactly-once execution reported as verified across 1,500+ tasks with 4 concurrent workers | Observation from the reported test run; not a guarantee across crash windows or external side effects. |
+| Enqueue throughput | **3,425.93 new tasks/second** | 60,000 unique email submissions in 17.513 seconds, concurrency 50; 100 additional warm-up submissions excluded. [Report](data/benchmark-20261103/enqueue-long.json) |
+| Mean / p95 / p99 API latency | **14.59 / 21.02 / 28.44 ms** | Same 60,000-request run; client-observed HTTP submission latency, including persistence and enqueue, excluding task execution. |
+| Errors / duplicates | **0 / 0** | Same run; all 60,000 returned task IDs were also found in PostgreSQL. |
+| Four-worker email completion throughput | **2.39 tasks/second** | 32 tasks completed in 13.374 seconds, including worker startup and polling overhead. Each handler includes a 1.5-second simulated delay. [Report](data/benchmark-20261103/processing.json) |
+| Submission idempotency | **1 new task + 49 duplicate responses; 0 errors** | 50 concurrent submissions sharing one key, all returning one task ID. [Report](data/benchmark-20261103/idempotency.json) |
+| Controlled execution audit | **32/32 SUCCESS; one email-log row per task** | Four-worker simulated-email run; no crash injection or external email delivery. This does not establish exactly-once external effects. [Report](data/benchmark-20261103/processing.json) |
 
-The latency and throughput figures should be read as separate measurements; the repository does not establish that they came from the same run. Simulated handlers wait approximately 1.5–4 seconds per task, so enqueue throughput is distinct from worker processing capacity.
+Environment: Intel Core i5-12450H, 12 logical CPUs, 15.68 GiB RAM, Windows, Node.js 22.13.0, PostgreSQL 18.1 on Windows, and Redis 8.0.5 in WSL Ubuntu. API and load generator ran on the same machine. PostgreSQL used the supplied [benchmark fixture](benchmarks/schema.sql) plus the existing migration, with `fsync`, `synchronous_commit`, and `full_page_writes` enabled. Redis snapshotting and AOF were disabled. API logging remained enabled and was redirected to files. No workers or reaper ran during enqueue measurements, so the reported rate is submission capacity while the queue grows. This is a short local benchmark, not a production capacity guarantee or a reproduction of the original missing schema/environment.
+
+The unchanged original batch scripts measured **1,866 enqueues/second** and, in a separate 500-request latency run, **30.52 ms mean / 125 ms p99** in this setup. Their output is retained in [original throughput output](data/benchmark-20261103/original-test-enqueue-throughput.js.txt) and [original latency output](data/benchmark-20261103/original-benchmark-api.js.txt). The corrected default entry points measured 2,136.10/sec at 1,000 requests/concurrency 100 and 1,803.98/sec at 500 requests/concurrency 50; [their reports](data/benchmark-20261103) record the matching latency values. These short runs differ in workload, warm-up, and load generation, so their numbers should not be combined into one benchmark result.
+
+### Concurrency and the observed limit
+
+Two 5,000-request runs per concurrency level, with constant concurrency, keep-alive, and 100 excluded warm-up requests, produced the following ranges. [Raw summary](data/benchmark-20261103/summary.json)
+
+| Concurrent requests | New tasks/second | Mean HTTP latency | p99 HTTP latency |
+| --- | --- | --- | --- |
+| 10 | 2,214–2,363 | 4.23–4.51 ms | 7.54–9.19 ms |
+| 50 | 3,244–3,362 | 14.83–15.36 ms | 20.82–26.28 ms |
+| 100 | 3,285–3,450 | 28.78–30.23 ms | 37.62–59.07 ms |
+| 200 | 2,852–3,255 | 60.54–69.22 ms | 85.60–117.50 ms |
+
+There is **no 2,000/sec cap in the code**. In these tests, additional concurrency beyond 50–100 mostly increased waiting and latency. A separate [instrumented diagnostic run](data/benchmark-20261103/profile.json), at concurrency 100, observed a ten-connection PostgreSQL pool with up to 86 requests waiting. Mean pool acquisition took 21.40 ms within a mean 25.69 ms database-query span; Redis `LPUSH` and `SADD` spans averaged 4.31 and 4.93 ms. The API event loop was busy for 99.25% of the diagnostic interval. These measurements identify pool waiting and API event-loop pressure; instrumentation adds overhead, and they do not isolate a single root cause or prove that increasing the pool alone will help. The two sequential Redis operations and per-task logging also remain part of the request path.
+
+Worker capacity is separate: one 1.5-second email at a time gives an ideal ceiling of 0.67 emails/second per worker, or 2.67 with four workers, before overhead. The API does not apply backlog-based admission control. Slow completion therefore grows the queue rather than imposing a fixed enqueue cap.
+
+### What changed, and exactly what the timer measures
+
+The measured application submission path was not optimized to produce the new figures. The benchmark changed from short, fixed batches to continuously replenished concurrency, with an explicit warm-up, a longer measurement, unique run IDs, stricter response accounting, and saved evidence. The corrected client explicitly configures persistent HTTP connections; the tested Node.js 22 global HTTP agent already enables keep-alive by default, so connection reuse alone is not an established explanation for the difference. The database schema and environment were also newly specified because the original setup was unavailable. The earlier ~2K/sec result is therefore not proven false: the original throughput script measured 1,866/sec in the new setup. The new result must not be described as a measured percentage improvement over the historical figure, because the test conditions differ.
+
+For the 60,000-request result, the client first sent 100 real warm-up `POST /tasks` requests and waited for them to finish. Those submissions and the health check were excluded from measurement. It then started a monotonic timer, kept up to 50 measured HTTP requests in flight, replaced each finished request with the next one, and stopped the timer after the final measured response. Concurrency 50 means up to 50 outstanding requests, not 50 total requests or 50 distinct users. All 60,000 measured responses were HTTP 201 with `duplicate: false` and distinct task IDs. The later database audit found all of those IDs; the audit itself was outside the timer. There were 60,100 task-submission requests in this particular test including warm-up.
+
+```text
+Timed request path:
+client serialization/send -> HTTP -> Express parsing/validation
+-> PostgreSQL connection wait + unique-checked INSERT/commit
+-> Redis LPUSH -> Redis SADD -> per-task logging
+-> HTTP response -> client receives/parses response
+
+Enqueue throughput = 60,000 new tasks / 17.5134933 wall-clock seconds
+                   = 3,425.93 new tasks/second
+
+Mean HTTP latency  = sum of 60,000 individual request durations / 60,000
+                   = 14.59 milliseconds
+
+Concurrency sanity check: 50 / 0.01459 seconds ~= 3,427 responses/second
+```
+
+The final line is an approximate consistency check for continuously occupied concurrency; it is not an independent measurement of maximum capacity. Requests overlap, so adding all their individual durations does not give the elapsed wall-clock time. Client scheduling, serialization, network communication, API work, database waiting/commit, both Redis commands, and response handling contribute to the measured interval. Background handler execution does not: no workers ran against this queue during the submission test. All 60,000 measured tasks were accepted and queued, not completed. The separate four-worker test completed a different 32-task cohort in 13.374 seconds, or 2.39 completions/second.
+
+A claim such as "50K+ Redis enqueues/sec" needs its own measurement boundary and configuration. Timing Redis commands directly, pipelining or batching IDs, and timing this application's HTTP-plus-PostgreSQL-plus-Redis path are different experiments. Redis's standalone maximum was not measured here. Even one application task issues two Redis commands in addition to its database write. At concurrency 50, 50,000 submissions/sec would require an average response time of about 1 ms; with the observed 14.59 ms mean, the same arithmetic would require roughly 730 requests in flight *if latency stayed constant*. The concurrency sweep shows that latency does not stay constant as concurrency increases. Pool waits, API event-loop pressure, Windows/WSL communication, and competition with the local load generator require further isolated experiments before attributing the plateau to one component. The ~3.4K/sec result is an observation for this configuration, not a Redis limit or an application-wide fixed cap.
 
 ### Available validation scripts
 
@@ -171,14 +216,38 @@ Run these against a configured local API, PostgreSQL, Redis, workers, and reaper
 
 | Command | What it exercises |
 | --- | --- |
-| `node benchmark-api.js` | 500 submissions in batches of 50; reports mean, p95, p99, errors, and duplicate responses. |
-| `node test-enqueue-throughput.js` | 1,000 submissions in batches of 100; reports successful enqueue requests per second. |
-| `node test-idempotency.js` | 50 concurrent submissions sharing one key; reports unique task IDs and duplicate responses. |
-| `node test-processing-throughput.js` | Polls aggregate task states from the last ten minutes and reports completion throughput from the polling start. It does not isolate a benchmark run or audit duplicate effects. |
+| `node benchmark-api.js` | 500 measured submissions at concurrency 50; 100 excluded warm-up submissions; saves throughput, mean/p95/p99, errors, duplicates, environment, and task IDs as JSON. |
+| `node test-enqueue-throughput.js` | 1,000 measured submissions at concurrency 100, plus 100 excluded warm-up submissions; counts only unique HTTP 201 responses marked `duplicate: false` as new enqueues. |
+| `node test-idempotency.js` | 50 concurrent submissions sharing one key; requires one creation, 49 duplicates, no errors, and one task ID to pass. Checks submission deduplication, not effect safety. |
+| `node test-processing-throughput.js <enqueue-report.json>` | Observes only task IDs from a valid enqueue report. Subtracts successes already present at the baseline query; reports new completions per observation second. Refuses an already-completed cohort, fails on missing IDs or DEAD tasks, and times out after 120 seconds by default. |
 | `node test-retry-endpoint.js` | Creates an intentionally failing task, waits for `DEAD`, then requests a manual retry. |
 | `node test-crash-recovery.js` | Provides manual crash-test instructions and checks task states afterward. Its two-minute assumptions do not match the current ten-minute zombie threshold and five-minute scan interval; adjust the procedure before using it. |
 
-These are standalone integration scripts, not a complete automated correctness suite. Some report failures without a failing exit code, and none provides the saved 1,500-task, four-worker execution audit. `npm test` is currently a placeholder.
+The API metric scripts use continuously replenished concurrency, HTTP keep-alive, monotonic timing, random run IDs, and five-second request timeouts. `BASE_URL`, `BENCH_N`, `BENCH_CONCURRENCY`, `BENCH_WARMUP`, `BENCH_TIMEOUT_MS`, and `BENCH_OUTPUT` configure the run; generated reports default to `data/benchmarks/`. Mean is the arithmetic average; p95/p99 use the nearest-rank percentile of successful HTTP responses. A p99 of 28.44 ms means at least 99% of the sampled successful requests finished within that time. Latency excludes errors and task execution; error counts must be read alongside it. A failed or duplicate-containing run exits nonzero; no successful samples produce unavailable latency rather than `NaN`.
+
+The original enqueue script counted duplicate HTTP 200 responses as new enqueues. The original processing script divided a rolling ten-minute success count by time since polling began, so old completions could inflate its rate. Both counting errors are corrected. `npm test` runs nine regression tests covering these cases, HTTP failures, warm-up exclusion, percentiles, bounded processing waits, and idempotency validation. The retry and manual crash scripts remain standalone checks with the limitations described above; these tests are not a complete distributed-failure suite.
+
+### Checks actually completed in this benchmark session
+
+This is an execution record for the saved results, not a claim that every available test was run.
+
+| Check | Execution status | What it establishes |
+| --- | --- | --- |
+| Original API-latency and enqueue scripts | Ran successfully against the local fixture | Original batch-script outputs retained for comparison; does not reproduce the missing historical environment. |
+| Corrected API-latency and enqueue entry points | Ran successfully | New-task response counting, HTTP latency, and saved reports for the default workloads. |
+| Concurrency sweep and 60,000-request submission run | Passed | Eight 5,000-request runs and one 60,000-request run; returned IDs checked against PostgreSQL. Submission measurements only. |
+| `node test-idempotency.js` | Passed | One creation and 49 duplicate responses, one returned task ID, no errors. |
+| Processing measurement through `observeProcessing`, shared with `test-processing-throughput.js` | Passed | Separate 32-task, four-worker run; all tasks SUCCESS and one email-log row per task. The standalone processing CLI was not run through a positive complete-cohort case. |
+| `npm test` | 9/9 passed | Regression checks for the measurement and idempotency-reporting code; not a full worker/reaper integration suite. |
+| API unavailable / processing CLI missing report | Expected nonzero exits observed | Missing prerequisites no longer appear as successful metric runs. |
+| JavaScript syntax / `git diff --check` | Passed | Source parses and changes have no whitespace errors; does not establish runtime correctness. |
+| `node test-retry-endpoint.js` | **Not run; source reviewed** | Automatic retries through exhaustion and the manual retry endpoint remain unverified in this session. The script also logs post-retry expectations without asserting them. |
+| `node test-crash-recovery.js` | **Not run; source reviewed** | Existing procedure ages tasks by two minutes and waits about two minutes; current zombie threshold is ten minutes with a five-minute scan interval. Its success criterion also does not require SUCCESS. |
+| Redis/PostgreSQL outages, worker crash injection, and end-to-end exactly-once effects | **Not tested live** | No guarantee established for arbitrary failures or external side effects. Queue-membership races and ownership limitations described above remain. |
+
+The temporary benchmark API, workers, PostgreSQL cluster on port 55432, and Redis instance on port 56379 were stopped after testing. A later check also found Ubuntu WSL stopped. The pre-existing PostgreSQL service on port 5432 remained running. Installed npm dependencies, the Redis package in Ubuntu, database fixture files, and reports remain on disk. These are observations from the benchmark session and follow-up, not a live service-status endpoint.
+
+To reproduce the saved local suite, provision a fresh disposable PostgreSQL database with `benchmarks/schema.sql` followed by `db/migrations/add_unique_idempotency.sql`, configure the `DB_*` and `REDIS_URL` environment variables, and ensure the configured API port is free. Then run `node benchmarks/run-local.js` and `node benchmarks/run-extended.js`. The first runner performs the original and corrected short benchmarks, the concurrency sweep, diagnostics, and a four-worker audit; the second performs the 60,000-task run and submission-idempotency check. They start and stop their own API/worker processes, and leave the test data in the configured stores. The worker audit also requires an empty Redis database 1 on the disposable Redis instance. Original scripts are read from Git revision `dc4e3e90f2b0f41a69215f889938a650c7abf43e` (overridable with `BENCH_BASELINE_REF`); source snapshots are saved locally with their output.
 
 ## Tech Stack
 
@@ -193,7 +262,7 @@ These are standalone integration scripts, not a complete automated correctness s
 
 Install dependencies with `npm ci`. Configure `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, and `REDIS_URL` in a local `.env`; `PORT` defaults to `3000`.
 
-**Database prerequisite:** the repository includes an incremental constraint/index migration, but no initial schema for `tasks`, `email_logs`, `payment_logs`, or `operation_logs`. Provision those tables, their required columns, and task defaults such as `attempts` and `max_attempts` before applying [the migration](db/migrations/add_unique_idempotency.sql). The repository alone does not currently provide a complete fresh-database bootstrap.
+**Database prerequisite:** [benchmarks/schema.sql](benchmarks/schema.sql) provides a disposable initial schema for the measured test setup, inferred from the application queries. Apply it to a fresh database before [the migration](db/migrations/add_unique_idempotency.sql). It is a benchmark fixture, not a recovered copy of the unavailable original schema; review its types, defaults, and constraints before using it elsewhere.
 
 Start each process in a separate terminal after PostgreSQL and Redis are available:
 

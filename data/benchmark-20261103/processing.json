@@ -1,0 +1,18 @@
+{
+  "runId": "bench-320c8d60-afd6-40e3-ab92-cdb402e16753",
+  "valid": true,
+  "scope": "New SUCCESS transitions observed after baseline query for this run's task IDs; not handler-only service time",
+  "totalTasks": 32,
+  "baselineSuccesses": 0,
+  "newSuccesses": 32,
+  "dead": 0,
+  "observationSeconds": 13.373563200000001,
+  "completionsPerSecond": 2.3927804072440466,
+  "workers": 4,
+  "effectAudit": {
+    "tasks": 32,
+    "allSuccessful": true,
+    "exactlyOneEmailLogPerTask": true,
+    "scope": "Controlled simulated-email run; not proof of exactly-once external effects under crashes"
+  }
+}

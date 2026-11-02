@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-11-02T19:58:02.746Z",
+  "idempotencyKey": "idem-08782cd0-31ca-4751-af96-065e0ea117b2",
+  "requests": 50,
+  "valid": true,
+  "created": 1,
+  "duplicates": 49,
+  "errors": 0,
+  "uniqueIds": [
+    "109283"
+  ],
+  "scope": "HTTP submission deduplication only; does not establish exactly-once handler effects",
+  "errorSamples": []
+}

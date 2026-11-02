@@ -1,0 +1,4 @@
+Enqueued: 1000/1000
+Errors: 0
+Duration: 0.54s
+Enqueue throughput: 1866 tasks/sec
